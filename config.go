@@ -6,92 +6,74 @@ import (
 	"os"
 	"path/filepath"
 
+	"net/http"
+	"time"
+
 	"github.com/chrislonng/starx/cluster"
 	"github.com/chrislonng/starx/log"
-	"net/http"
+	"path"
+	"strings"
 )
 
 var VERSION = "0.0.1"
 
 var (
-	App               *starxApp // starx application
-	appPath           string
-	workPath          string
-	appConfigPath     string
-	serversConfigPath string
-	masterConfigPath  string
-	serverID          string              // current process server id
-	settings          map[string][]func() // all settings
-	endRunning        chan bool           // wait for end application
+	// App represents the current server process
+	App = &struct {
+		Master     *cluster.ServerConfig // master server config
+		Config     *cluster.ServerConfig // current server information
+		Name       string                // current application name
+		Standalone bool                  // current server is running in standalone mode
+		StartTime  time.Time             // startup time
+	}{}
 
-	checkOrigin func(*http.Request) bool // check origin when websocket enabled
+	// env represents the environment of the current process, includes
+	// work path and config path etc.
+	env = &struct {
+		wd                string                      // working path
+		serversConfigPath string                      // servers config path(default: $appPath/configs/servers.json)
+		masterServerId    string                      // master server id
+		serverId          string                      // current process server id
+		settings          map[string][]ServerInitFunc // all settings
+		die               chan bool                   // wait for end application
+
+		checkOrigin func(*http.Request) bool // check origin when websocket enabled
+	}{}
 )
 
+type ServerInitFunc func()
+
+// init default configs
 func init() {
-	App = newApp()
-	settings = make(map[string][]func())
-	endRunning = make(chan bool, 1)
+	// application initialize
+	App.Name = strings.TrimLeft(path.Base(os.Args[0]), "/")
+	App.Standalone = true
+	App.StartTime = time.Now()
 
-	workPath, _ = os.Getwd()
-	workPath, _ = filepath.Abs(workPath)
-	// initialize default configurations
-	appPath, _ = filepath.Abs(filepath.Dir(os.Args[0]))
+	// environment initialize
+	env.settings = make(map[string][]ServerInitFunc)
+	env.die = make(chan bool, 1)
 
-	appConfigPath = filepath.Join(appPath, "configs", "app.json")
-	serversConfigPath = filepath.Join(appPath, "configs", "servers.json")
-	masterConfigPath = filepath.Join(appPath, "configs", "master.json")
-	if workPath != appPath {
-		if fileExist(appConfigPath) {
-			os.Chdir(appPath)
-		} else {
-			appConfigPath = filepath.Join(workPath, "configs", "app.json")
-		}
+	if wd, err := os.Getwd(); err != nil {
+		panic(err)
+	} else {
+		env.wd, _ = filepath.Abs(wd)
+
+		// config file path
+		serversConfigPath := filepath.Join(wd, "configs", "servers.json")
 
 		if fileExist(serversConfigPath) {
-			os.Chdir(appPath)
-		} else {
-			serversConfigPath = filepath.Join(workPath, "configs", "servers.json")
-		}
-
-		if fileExist(masterConfigPath) {
-			os.Chdir(appPath)
-		} else {
-			masterConfigPath = filepath.Join(workPath, "configs", "master.json")
+			env.serversConfigPath = serversConfigPath
 		}
 	}
 }
 
 func parseConfig() {
-	// initialize app config
-	if !fileExist(appConfigPath) {
-		log.Fatalf("%s not found", appConfigPath)
-	} else {
-		type appConfig struct {
-			AppName    string `json:"AppName"`
-			Standalone bool   `json:"Standalone"`
-			LogLevel   string `json:"LogLevel"`
-		}
-		f, _ := os.Open(appConfigPath)
-		defer f.Close()
-		reader := json.NewDecoder(f)
-		var cfg appConfig
-		for {
-			if err := reader.Decode(&cfg); err == io.EOF {
-				break
-			} else if err != nil {
-				log.Errorf(err.Error())
-			}
-		}
-		App.AppName = cfg.AppName
-		App.Standalone = cfg.Standalone
-		//log.SetLevelByName(cfg.LogLevel)
-	}
-
 	// initialize servers config
-	if !fileExist(serversConfigPath) {
-		log.Fatalf("%s not found", serversConfigPath)
+	if !fileExist(env.serversConfigPath) {
+		log.Fatalf("%s not found", env.serversConfigPath)
 	} else {
-		f, _ := os.Open(serversConfigPath)
+		f, _ := os.Open(env.serversConfigPath)
 		defer f.Close()
 
 		reader := json.NewDecoder(f)
@@ -110,7 +92,7 @@ func parseConfig() {
 				cluster.Register(svr)
 			}
 		}
-		cluster.DumpSvrTypeMaps()
+		cluster.DumpServers()
 	}
 }
 

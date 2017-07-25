@@ -1,37 +1,21 @@
 package starx
 
 import (
-	"encoding/json"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
 	"os"
 	"os/signal"
 	"strings"
 	"syscall"
-	"time"
 
 	"github.com/chrislonng/starx/cluster"
 	"github.com/chrislonng/starx/log"
 	"github.com/gorilla/websocket"
 )
 
-type starxApp struct {
-	Master     *cluster.ServerConfig // master server config
-	Config     *cluster.ServerConfig // current server information
-	AppName    string
-	Standalone bool // current server is running in standalone mode
-	StartTime  time.Time
-}
-
-func newApp() *starxApp {
-	return &starxApp{StartTime: time.Now()}
-}
-
 func loadSettings() {
-	log.Infof("loading %s settings", App.Config.Type)
-	if setting, ok := settings[App.Config.Type]; ok && len(setting) > 0 {
+	if setting, ok := env.settings[App.Config.Type]; ok && len(setting) > 0 {
 		for _, fn := range setting {
 			fn()
 		}
@@ -42,16 +26,14 @@ func welcomeMsg() {
 	fmt.Println(asciiLogo)
 }
 
-func (app *starxApp) init() {
-	// get server id from command line
-
+func initSetting() {
 	// init
 	if App.Standalone {
-		if strings.TrimSpace(serverID) == "" {
+		if strings.TrimSpace(env.serverId) == "" {
 			log.Fatal("server running in standalone mode, but not found server id argument")
 		}
 
-		cfg, err := cluster.Server(serverID)
+		cfg, err := cluster.Server(env.serverId)
 		if err != nil {
 			log.Fatal(err.Error())
 		}
@@ -60,36 +42,21 @@ func (app *starxApp) init() {
 	} else {
 		// if server running in cluster mode, master server config require
 		// initialize master server config
-		if !fileExist(masterConfigPath) {
-			log.Fatalf("%s not found", masterConfigPath)
+		if env.masterServerId == "" {
+			log.Fatalf("master server id must be set in cluster mode", env.masterServerId)
+		}
+
+		if server, err := cluster.Server(env.masterServerId); err != nil {
+			log.Fatalf("wrong master server config file(%s)", env.masterServerId)
 		} else {
-			f, _ := os.Open(masterConfigPath)
-			defer f.Close()
-
-			reader := json.NewDecoder(f)
-			var master *cluster.ServerConfig
-			for {
-				if err := reader.Decode(master); err == io.EOF {
-					break
-				} else if err != nil {
-					log.Errorf(err.Error())
-				}
-			}
-
-			master.Type = "master"
-			master.IsMaster = true
-			App.Master = master
-			cluster.Register(master)
-		}
-		if App.Master == nil {
-			log.Fatalf("wrong master server config file(%s)", masterConfigPath)
+			App.Master = server
 		}
 
-		if strings.TrimSpace(serverID) == "" {
+		if strings.TrimSpace(env.serverId) == "" {
 			// not pass server id, running in master mode
 			App.Config = App.Master
 		} else {
-			cfg, err := cluster.Server(serverID)
+			cfg, err := cluster.Server(env.serverId)
 			if err != nil {
 				log.Fatal(err.Error())
 			}
@@ -102,14 +69,14 @@ func (app *starxApp) init() {
 	cluster.SetAppConfig(App.Config)
 }
 
-func (app *starxApp) start() {
+func startup() {
 	startupComps()
 
 	go func() {
-		if app.Config.IsWebsocket {
-			app.listenAndServeWS()
+		if App.Config.IsWebsocket {
+			listenAndServeWS()
 		} else {
-			app.listenAndServe()
+			listenAndServe()
 		}
 	}()
 
@@ -117,26 +84,23 @@ func (app *starxApp) start() {
 	signal.Notify(sg, syscall.SIGINT)
 	// stop server
 	select {
-	case <-endRunning:
+	case <-env.die:
 		log.Infof("The app will shutdown in a few seconds")
 	case s := <-sg:
 		log.Infof("got signal: %v", s)
 	}
-	log.Infof("server: " + app.Config.Id + " is stopping...")
+	log.Infof("server: " + App.Config.Id + " is stopping...")
 	shutdownComps()
-	close(endRunning)
+	close(env.die)
 }
 
 // Enable current server accept connection
-func (app *starxApp) listenAndServe() {
-	listener, err := net.Listen("tcp", fmt.Sprintf("%s:%d", app.Config.Host, app.Config.Port))
+func listenAndServe() {
+	listener, err := net.Listen("tcp", fmt.Sprintf("%s:%d", App.Config.Host, App.Config.Port))
 	if err != nil {
 		log.Fatal(err.Error())
 	}
-	log.Infof("listen at %s:%d(%s)",
-		app.Config.Host,
-		app.Config.Port,
-		app.Config.String())
+	log.Infof("listen at %s:%d(%s)", App.Config.Host, App.Config.Port, App.Config.String())
 
 	defer listener.Close()
 	for {
@@ -145,7 +109,7 @@ func (app *starxApp) listenAndServe() {
 			log.Errorf(err.Error())
 			continue
 		}
-		if app.Config.IsFrontend {
+		if App.Config.IsFrontend {
 			go handler.handle(conn)
 		} else {
 			go remote.handle(conn)
@@ -153,11 +117,11 @@ func (app *starxApp) listenAndServe() {
 	}
 }
 
-func (app *starxApp) listenAndServeWS() {
+func listenAndServeWS() {
 	var upgrader = websocket.Upgrader{
 		ReadBufferSize:  1024,
 		WriteBufferSize: 1024,
-		CheckOrigin:     checkOrigin,
+		CheckOrigin:     env.checkOrigin,
 	}
 
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
@@ -170,12 +134,9 @@ func (app *starxApp) listenAndServeWS() {
 		handler.HandleWS(conn)
 	})
 
-	log.Infof("listen at %s:%d(%s)",
-		app.Config.Host,
-		app.Config.Port,
-		app.Config.String())
+	log.Infof("listen at %s:%d(%s)", App.Config.Host, App.Config.Port, App.Config.String())
 
-	err := http.ListenAndServe(fmt.Sprintf("%s:%d", app.Config.Host, app.Config.Port), nil)
+	err := http.ListenAndServe(fmt.Sprintf("%s:%d", App.Config.Host, App.Config.Port), nil)
 
 	if err != nil {
 		log.Fatal(err.Error())

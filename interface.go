@@ -14,9 +14,9 @@ import (
 func Run() {
 	//welcomeMsg()
 	parseConfig()
-	App.init()
+	initSetting()
 	loadSettings()
-	App.start()
+	startup()
 }
 
 // Set special server initial function, starx.Set("oneServerType | anotherServerType", func(){})
@@ -24,7 +24,7 @@ func Set(svrTypes string, fn func()) {
 	var types = strings.Split(strings.TrimSpace(svrTypes), "|")
 	for _, t := range types {
 		t = strings.TrimSpace(t)
-		settings[t] = append(settings[t], fn)
+		env.settings[t] = append(env.settings[t], fn)
 	}
 }
 
@@ -41,25 +41,7 @@ func SetServerID(id string) {
 	if id == "" {
 		panic("empty server id")
 	}
-	serverID = id
-}
-
-// Set the path of app.json
-func SetAppConfig(path string) {
-	path = strings.TrimSpace(path)
-	if path == "" {
-		panic("empty app path")
-	}
-	appConfigPath = path
-}
-
-// Set the path of master.json
-func SetMasterConfig(path string) {
-	path = strings.TrimSpace(path)
-	if path == "" {
-		panic("empty app path")
-	}
-	masterConfigPath = path
+	env.serverId = id
 }
 
 // Set the path of servers.json
@@ -68,7 +50,7 @@ func SetServersConfig(path string) {
 	if path == "" {
 		panic("empty app path")
 	}
-	serversConfigPath = path
+	env.serversConfigPath = path
 }
 
 // Set heartbeat time internal
@@ -78,5 +60,21 @@ func SetHeartbeatInternal(d time.Duration) {
 
 // SetCheckOriginFunc set the function that check `Origin` in http headers
 func SetCheckOriginFunc(fn func(*http.Request) bool) {
-	checkOrigin = fn
+	env.checkOrigin = fn
+}
+
+// EnableCluster enable cluster mode
+func EnableCluster() {
+	App.Standalone = false
+}
+
+// SetMasterServerID set master server id, config must be contained
+// in servers.json master server id must be set when cluster mode
+// enabled
+func SetMasterServerID(id string) {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		panic("empty master server id")
+	}
+	env.masterServerId = id
 }

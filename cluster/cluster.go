@@ -47,7 +47,7 @@ func DumpSvrIdMaps() {
 	}
 }
 
-func DumpSvrTypeMaps() {
+func DumpServers() {
 	svrLock.RLock()
 	defer svrLock.RUnlock()
 
